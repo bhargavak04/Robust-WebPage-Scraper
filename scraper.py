@@ -105,7 +105,7 @@ class WebScraper:
                     '--disable-gpu'
                 ]
             ),
-            # Method 4: System browser
+            # Method 4: System browsers
             lambda: self.playwright.chromium.launch(
                 headless=True,
                 executable_path="/usr/bin/chromium-browser",
@@ -118,7 +118,37 @@ class WebScraper:
                     '--no-zygote',
                     '--disable-gpu'
                 ]
-            )
+            ),
+            # Method 5: Google Chrome
+            lambda: self.playwright.chromium.launch(
+                headless=True,
+                executable_path="/usr/bin/google-chrome",
+                args=[
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-accelerated-2d-canvas',
+                    '--no-first-run',
+                    '--no-zygote',
+                    '--disable-gpu'
+                ]
+            ),
+            # Method 6: Generic chrome
+            lambda: self.playwright.chromium.launch(
+                headless=True,
+                executable_path="/usr/bin/chrome",
+                args=[
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-accelerated-2d-canvas',
+                    '--no-first-run',
+                    '--no-zygote',
+                    '--disable-gpu'
+                ]
+            ),
+            # Method 7: Try to find browser dynamically
+            lambda: self._launch_with_dynamic_browser()
         ]
         
         for i, launch_method in enumerate(launch_methods, 1):
@@ -147,20 +177,106 @@ class WebScraper:
         
         logger.info("🔧 Installing Playwright browsers...")
         
-        try:
-            result = subprocess.run(
-                ["playwright", "install", "chromium", "--with-deps"],
-                capture_output=True,
-                text=True,
-                timeout=300
-            )
-            
-            if result.returncode == 0 and os.path.exists(browser_path):
-                logger.info("✅ Browser installation successful")
-            else:
-                logger.error(f"❌ Browser installation failed: {result.stderr}")
-        except Exception as e:
-            logger.error(f"❌ Browser installation error: {e}")
+        # Try multiple installation methods
+        installation_methods = [
+            # Method 1: Standard install
+            ["playwright", "install", "chromium", "--with-deps"],
+            # Method 2: Install without deps
+            ["playwright", "install", "chromium"],
+            # Method 3: Force install
+            ["playwright", "install", "chromium", "--force"],
+            # Method 4: Install with specific version
+            ["playwright", "install", "chromium@1091"]
+        ]
+        
+        for i, cmd in enumerate(installation_methods, 1):
+            try:
+                logger.info(f"📦 Trying installation method {i}: {' '.join(cmd)}")
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
+                    env={**os.environ, "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD": "0"}
+                )
+                
+                if result.returncode == 0 and os.path.exists(browser_path):
+                    logger.info(f"✅ Installation method {i} successful")
+                    return
+                else:
+                    logger.error(f"❌ Installation method {i} failed: {result.stderr}")
+            except Exception as e:
+                logger.error(f"❌ Installation method {i} error: {e}")
+        
+        # If all methods fail, try to find existing browser
+        logger.info("🔍 Searching for existing browser installations...")
+        possible_paths = [
+            "/app/.cache/ms-playwright/chromium-1091/chrome-linux/chrome",
+            "/root/.cache/ms-playwright/chromium-1091/chrome-linux/chrome",
+            "/usr/bin/chromium-browser",
+            "/usr/bin/google-chrome",
+            "/usr/bin/chrome",
+            "/opt/google/chrome/chrome",
+            "/snap/bin/chromium"
+        ]
+        
+        for path in possible_paths:
+            if os.path.exists(path) and os.access(path, os.X_OK):
+                logger.info(f"✅ Found existing browser at: {path}")
+                # Try to copy to expected location
+                try:
+                    import shutil
+                    target_dir = "/home/scraper/.cache/ms-playwright/chromium-1091/chrome-linux"
+                    os.makedirs(target_dir, exist_ok=True)
+                    shutil.copy2(path, f"{target_dir}/chrome")
+                    os.chmod(f"{target_dir}/chrome", 0o755)
+                    logger.info("✅ Browser copied to expected location")
+                    return
+                except Exception as e:
+                    logger.error(f"❌ Failed to copy browser: {e}")
+        
+        logger.error("❌ All browser installation methods failed")
+
+    async def _launch_with_dynamic_browser(self):
+        """Try to find and launch any available browser"""
+        import os
+        
+        # Search for any available browser
+        possible_paths = [
+            "/home/scraper/.cache/ms-playwright/chromium-1091/chrome-linux/chrome",
+            "/app/.cache/ms-playwright/chromium-1091/chrome-linux/chrome",
+            "/root/.cache/ms-playwright/chromium-1091/chrome-linux/chrome",
+            "/usr/bin/chromium-browser",
+            "/usr/bin/google-chrome",
+            "/usr/bin/chrome",
+            "/opt/google/chrome/chrome",
+            "/snap/bin/chromium",
+            "/usr/bin/firefox",
+            "/usr/bin/geckodriver"
+        ]
+        
+        for path in possible_paths:
+            if os.path.exists(path) and os.access(path, os.X_OK):
+                logger.info(f"🎯 Found browser at: {path}")
+                try:
+                    return await self.playwright.chromium.launch(
+                        headless=True,
+                        executable_path=path,
+                        args=[
+                            '--no-sandbox',
+                            '--disable-setuid-sandbox',
+                            '--disable-dev-shm-usage',
+                            '--disable-accelerated-2d-canvas',
+                            '--no-first-run',
+                            '--no-zygote',
+                            '--disable-gpu'
+                        ]
+                    )
+                except Exception as e:
+                    logger.error(f"❌ Failed to launch browser at {path}: {e}")
+                    continue
+        
+        raise Exception("No browser found in any expected location")
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         if hasattr(self, 'browser'):
