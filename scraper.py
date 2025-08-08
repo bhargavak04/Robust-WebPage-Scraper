@@ -59,9 +59,10 @@ class WebScraper:
     async def __aenter__(self):
         self.playwright = await async_playwright().start()
         
-        # Try to launch browser with fallback options
-        try:
-            self.browser = await self.playwright.chromium.launch(
+        # Try multiple browser launch methods
+        launch_methods = [
+            # Method 1: Standard launch
+            lambda: self.playwright.chromium.launch(
                 headless=True,
                 args=[
                     '--no-sandbox',
@@ -72,27 +73,62 @@ class WebScraper:
                     '--no-zygote',
                     '--disable-gpu'
                 ]
+            ),
+            # Method 2: With explicit path
+            lambda: self.playwright.chromium.launch(
+                headless=True,
+                executable_path="/home/scraper/.cache/ms-playwright/chromium-1091/chrome-linux/chrome",
+                args=[
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-accelerated-2d-canvas',
+                    '--no-first-run',
+                    '--no-zygote',
+                    '--disable-gpu'
+                ]
+            ),
+            # Method 3: Try different paths
+            lambda: self.playwright.chromium.launch(
+                headless=True,
+                executable_path="/app/.cache/ms-playwright/chromium-1091/chrome-linux/chrome",
+                args=[
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-accelerated-2d-canvas',
+                    '--no-first-run',
+                    '--no-zygote',
+                    '--disable-gpu'
+                ]
+            ),
+            # Method 4: System browser
+            lambda: self.playwright.chromium.launch(
+                headless=True,
+                executable_path="/usr/bin/chromium-browser",
+                args=[
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-accelerated-2d-canvas',
+                    '--no-first-run',
+                    '--no-zygote',
+                    '--disable-gpu'
+                ]
             )
-        except Exception as e:
-            logger.error(f"Failed to launch Chromium: {e}")
-            # Try with different executable path
+        ]
+        
+        for i, launch_method in enumerate(launch_methods, 1):
             try:
-                self.browser = await self.playwright.chromium.launch(
-                    headless=True,
-                    executable_path="/home/scraper/.cache/ms-playwright/chromium-1091/chrome-linux/chrome",
-                    args=[
-                        '--no-sandbox',
-                        '--disable-setuid-sandbox',
-                        '--disable-dev-shm-usage',
-                        '--disable-accelerated-2d-canvas',
-                        '--no-first-run',
-                        '--no-zygote',
-                        '--disable-gpu'
-                    ]
-                )
-            except Exception as e2:
-                logger.error(f"Failed to launch with explicit path: {e2}")
-                raise Exception(f"Could not launch browser: {e} -> {e2}")
+                logger.info(f"Trying browser launch method {i}")
+                self.browser = await launch_method()
+                logger.info(f"✅ Browser launched successfully with method {i}")
+                break
+            except Exception as e:
+                logger.error(f"❌ Browser launch method {i} failed: {e}")
+                if i == len(launch_methods):
+                    raise Exception(f"All browser launch methods failed. Last error: {e}")
+                continue
         
         return self
 
