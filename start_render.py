@@ -9,24 +9,34 @@ import subprocess
 import logging
 
 def install_playwright_browsers():
-    """Install Playwright browsers if not already installed"""
+    """Install Playwright browsers using comprehensive installation script"""
     print("🔧 Installing Playwright browsers...")
     
     try:
-        # Install chromium browser
-        subprocess.run(["playwright", "install", "chromium"], check=True)
-        print("✅ Chromium browser installed")
+        # Run the comprehensive installation script
+        result = subprocess.run(
+            ["python", "install_browsers.py"],
+            capture_output=True,
+            text=True,
+            timeout=600  # 10 minutes timeout
+        )
         
-        # Install system dependencies
-        subprocess.run(["playwright", "install-deps", "chromium"], check=True)
-        print("✅ System dependencies installed")
+        print(f"Installation output: {result.stdout}")
+        if result.stderr:
+            print(f"Installation errors: {result.stderr}")
         
-        return True
-    except subprocess.CalledProcessError as e:
-        print(f"❌ Error installing Playwright browsers: {e}")
+        if result.returncode == 0:
+            print("✅ Browser installation successful")
+            return True
+        else:
+            print(f"❌ Browser installation failed with code {result.returncode}")
+            return False
+            
+    except subprocess.TimeoutExpired:
+        print("❌ Browser installation timed out")
         return False
-    except FileNotFoundError:
-        print("❌ Playwright not found")
+    except Exception as e:
+        print(f"❌ Error running browser installation: {e}")
         return False
 
 def start_service():

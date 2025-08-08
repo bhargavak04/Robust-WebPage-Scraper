@@ -125,11 +125,17 @@ async def scrape_websites(request: ScrapeRequest):
 @app.get("/health")
 async def health_check():
     """Detailed health check endpoint"""
+    # Check if browser exists
+    browser_path = "/home/scraper/.cache/ms-playwright/chromium-1091/chrome-linux/chrome"
+    browser_status = "available" if os.path.exists(browser_path) else "missing"
+    
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
         "service": "Robust Web Scraping Service",
-        "version": "1.0.0"
+        "version": "1.0.0",
+        "browser_status": browser_status,
+        "browser_path": browser_path
     }
 
 if __name__ == "__main__":

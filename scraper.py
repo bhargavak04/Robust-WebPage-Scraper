@@ -58,18 +58,42 @@ class WebScraper:
 
     async def __aenter__(self):
         self.playwright = await async_playwright().start()
-        self.browser = await self.playwright.chromium.launch(
-            headless=True,
-            args=[
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-accelerated-2d-canvas',
-                '--no-first-run',
-                '--no-zygote',
-                '--disable-gpu'
-            ]
-        )
+        
+        # Try to launch browser with fallback options
+        try:
+            self.browser = await self.playwright.chromium.launch(
+                headless=True,
+                args=[
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-accelerated-2d-canvas',
+                    '--no-first-run',
+                    '--no-zygote',
+                    '--disable-gpu'
+                ]
+            )
+        except Exception as e:
+            logger.error(f"Failed to launch Chromium: {e}")
+            # Try with different executable path
+            try:
+                self.browser = await self.playwright.chromium.launch(
+                    headless=True,
+                    executable_path="/home/scraper/.cache/ms-playwright/chromium-1091/chrome-linux/chrome",
+                    args=[
+                        '--no-sandbox',
+                        '--disable-setuid-sandbox',
+                        '--disable-dev-shm-usage',
+                        '--disable-accelerated-2d-canvas',
+                        '--no-first-run',
+                        '--no-zygote',
+                        '--disable-gpu'
+                    ]
+                )
+            except Exception as e2:
+                logger.error(f"Failed to launch with explicit path: {e2}")
+                raise Exception(f"Could not launch browser: {e} -> {e2}")
+        
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
