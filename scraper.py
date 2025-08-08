@@ -59,6 +59,9 @@ class WebScraper:
     async def __aenter__(self):
         self.playwright = await async_playwright().start()
         
+        # Try to install browser if missing
+        await self._ensure_browser_installed()
+        
         # Try multiple browser launch methods
         launch_methods = [
             # Method 1: Standard launch
@@ -131,6 +134,33 @@ class WebScraper:
                 continue
         
         return self
+
+    async def _ensure_browser_installed(self):
+        """Ensure browser is installed"""
+        import subprocess
+        import os
+        
+        browser_path = "/home/scraper/.cache/ms-playwright/chromium-1091/chrome-linux/chrome"
+        if os.path.exists(browser_path):
+            logger.info("✅ Browser already installed")
+            return
+        
+        logger.info("🔧 Installing Playwright browsers...")
+        
+        try:
+            result = subprocess.run(
+                ["playwright", "install", "chromium", "--with-deps"],
+                capture_output=True,
+                text=True,
+                timeout=300
+            )
+            
+            if result.returncode == 0 and os.path.exists(browser_path):
+                logger.info("✅ Browser installation successful")
+            else:
+                logger.error(f"❌ Browser installation failed: {result.stderr}")
+        except Exception as e:
+            logger.error(f"❌ Browser installation error: {e}")
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         if hasattr(self, 'browser'):

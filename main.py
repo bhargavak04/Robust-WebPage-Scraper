@@ -61,6 +61,41 @@ class ScrapeResponse(BaseModel):
 # Initialize scraper (will be created per request)
 scraper = None
 
+# Browser installation check
+def ensure_browser_installed():
+    """Ensure Playwright browser is installed"""
+    import subprocess
+    import os
+    
+    browser_path = "/home/scraper/.cache/ms-playwright/chromium-1091/chrome-linux/chrome"
+    if os.path.exists(browser_path):
+        logger.info("✅ Browser already installed")
+        return True
+    
+    logger.info("🔧 Installing Playwright browsers...")
+    
+    try:
+        # Try to install browser
+        result = subprocess.run(
+            ["playwright", "install", "chromium", "--with-deps"],
+            capture_output=True,
+            text=True,
+            timeout=300
+        )
+        
+        if result.returncode == 0 and os.path.exists(browser_path):
+            logger.info("✅ Browser installation successful")
+            return True
+        else:
+            logger.error(f"❌ Browser installation failed: {result.stderr}")
+            return False
+    except Exception as e:
+        logger.error(f"❌ Browser installation error: {e}")
+        return False
+
+# Install browser on startup
+ensure_browser_installed()
+
 @app.get("/")
 async def root():
     """Health check endpoint"""
