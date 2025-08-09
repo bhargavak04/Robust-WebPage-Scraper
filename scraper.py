@@ -7,7 +7,6 @@ from typing import List, Dict, Any, Optional, Tuple
 from urllib.parse import urljoin, urlparse
 from datetime import datetime
 import json
-
 from playwright.async_api import async_playwright, Browser, Page, TimeoutError as PlaywrightTimeoutError
 from bs4 import BeautifulSoup
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
@@ -55,387 +54,316 @@ class WebScraper:
             "a:contains('Details')",
             "a:contains('Continue reading')"
         ]
+        
+        # Add timeout and concurrency limits for Render.com
+        self.page_timeout = 30000  # 30 seconds per page
+        self.article_timeout = 20000  # 20 seconds per article
+        self.max_concurrent_articles = 3  # Limit concurrent processing
 
     async def __aenter__(self):
-        self.playwright = await async_playwright().start()
-        
-        # Try to install browser if missing
-        await self._ensure_browser_installed()
-        
-        # Try multiple browser launch methods
-        launch_methods = [
-            # Method 1: Standard launch
-            lambda: self.playwright.chromium.launch(
-                headless=True,
-                args=[
-                    '--no-sandbox',
-                    '--disable-setuid-sandbox',
-                    '--disable-dev-shm-usage',
-                    '--disable-accelerated-2d-canvas',
-                    '--no-first-run',
-                    '--no-zygote',
-                    '--disable-gpu'
-                ]
-            ),
-            # Method 2: With explicit path
-            lambda: self.playwright.chromium.launch(
-                headless=True,
-                executable_path="/home/scraper/.cache/ms-playwright/chromium-1091/chrome-linux/chrome",
-                args=[
-                    '--no-sandbox',
-                    '--disable-setuid-sandbox',
-                    '--disable-dev-shm-usage',
-                    '--disable-accelerated-2d-canvas',
-                    '--no-first-run',
-                    '--no-zygote',
-                    '--disable-gpu'
-                ]
-            ),
-            # Method 3: Try different paths
-            lambda: self.playwright.chromium.launch(
-                headless=True,
-                executable_path="/app/.cache/ms-playwright/chromium-1091/chrome-linux/chrome",
-                args=[
-                    '--no-sandbox',
-                    '--disable-setuid-sandbox',
-                    '--disable-dev-shm-usage',
-                    '--disable-accelerated-2d-canvas',
-                    '--no-first-run',
-                    '--no-zygote',
-                    '--disable-gpu'
-                ]
-            ),
-            # Method 4: System browsers
-            lambda: self.playwright.chromium.launch(
-                headless=True,
-                executable_path="/usr/bin/chromium-browser",
-                args=[
-                    '--no-sandbox',
-                    '--disable-setuid-sandbox',
-                    '--disable-dev-shm-usage',
-                    '--disable-accelerated-2d-canvas',
-                    '--no-first-run',
-                    '--no-zygote',
-                    '--disable-gpu'
-                ]
-            ),
-            # Method 5: Google Chrome
-            lambda: self.playwright.chromium.launch(
-                headless=True,
-                executable_path="/usr/bin/google-chrome",
-                args=[
-                    '--no-sandbox',
-                    '--disable-setuid-sandbox',
-                    '--disable-dev-shm-usage',
-                    '--disable-accelerated-2d-canvas',
-                    '--no-first-run',
-                    '--no-zygote',
-                    '--disable-gpu'
-                ]
-            ),
-            # Method 6: Generic chrome
-            lambda: self.playwright.chromium.launch(
-                headless=True,
-                executable_path="/usr/bin/chrome",
-                args=[
-                    '--no-sandbox',
-                    '--disable-setuid-sandbox',
-                    '--disable-dev-shm-usage',
-                    '--disable-accelerated-2d-canvas',
-                    '--no-first-run',
-                    '--no-zygote',
-                    '--disable-gpu'
-                ]
-            ),
-            # Method 7: Try to find browser dynamically
-            lambda: self._launch_with_dynamic_browser()
+        """Enhanced async context manager with better error handling"""
+        try:
+            self.playwright = await async_playwright().start()
+            await self._ensure_browser_installed()
+            
+            # Simplified browser launch with most reliable method first
+            self.browser = await self._launch_browser()
+            logger.info("✅ Browser launched successfully")
+            return self
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize WebScraper: {e}")
+            if hasattr(self, 'playwright'):
+                await self.playwright.stop()
+            raise
+
+    async def _launch_browser(self):
+        """Simplified browser launch with better error handling"""
+        browser_args = [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--no-first-run',
+            '--no-zygote',
+            '--disable-gpu',
+            '--disable-web-security',
+            '--disable-features=VizDisplayCompositor'
         ]
         
-        for i, launch_method in enumerate(launch_methods, 1):
+        # Try browser paths in order of reliability
+        browser_paths = [
+            None,  # Default path
+            "/home/scraper/.cache/ms-playwright/chromium-1091/chrome-linux/chrome",
+            "/app/.cache/ms-playwright/chromium-1091/chrome-linux/chrome",
+            "/root/.cache/ms-playwright/chromium-1091/chrome-linux/chrome"
+        ]
+        
+        for i, path in enumerate(browser_paths):
             try:
-                logger.info(f"Trying browser launch method {i}")
-                self.browser = await launch_method()
-                logger.info(f"✅ Browser launched successfully with method {i}")
-                break
+                logger.info(f"Trying browser launch method {i+1}" + (f" with path: {path}" if path else ""))
+                
+                if path:
+                    browser = await self.playwright.chromium.launch(
+                        headless=True,
+                        executable_path=path,
+                        args=browser_args
+                    )
+                else:
+                    browser = await self.playwright.chromium.launch(
+                        headless=True,
+                        args=browser_args
+                    )
+                
+                # Test browser by creating a page
+                test_context = await browser.new_context()
+                test_page = await test_context.new_page()
+                await test_page.close()
+                await test_context.close()
+                
+                logger.info(f"✅ Browser launched successfully with method {i+1}")
+                return browser
+                
             except Exception as e:
-                logger.error(f"❌ Browser launch method {i} failed: {e}")
-                if i == len(launch_methods):
-                    raise Exception(f"All browser launch methods failed. Last error: {e}")
+                logger.error(f"❌ Browser launch method {i+1} failed: {e}")
+                if 'browser' in locals():
+                    try:
+                        await browser.close()
+                    except:
+                        pass
                 continue
         
-        return self
+        raise Exception("All browser launch methods failed")
 
     async def _ensure_browser_installed(self):
-        """Ensure browser is installed"""
+        """Optimized browser installation"""
         import subprocess
         import os
         
-        browser_path = "/home/scraper/.cache/ms-playwright/chromium-1091/chrome-linux/chrome"
-        if os.path.exists(browser_path):
-            logger.info("✅ Browser already installed")
-            return
-        
-        logger.info("🔧 Installing Playwright browsers...")
-        
-        # Try multiple installation methods
-        installation_methods = [
-            # Method 1: Standard install
-            ["playwright", "install", "chromium", "--with-deps"],
-            # Method 2: Install without deps
-            ["playwright", "install", "chromium"],
-            # Method 3: Force install
-            ["playwright", "install", "chromium", "--force"],
-            # Method 4: Install with specific version
-            ["playwright", "install", "chromium@1091"]
-        ]
-        
-        for i, cmd in enumerate(installation_methods, 1):
-            try:
-                logger.info(f"📦 Trying installation method {i}: {' '.join(cmd)}")
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=300,
-                    env={**os.environ, "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD": "0"}
-                )
-                
-                if result.returncode == 0 and os.path.exists(browser_path):
-                    logger.info(f"✅ Installation method {i} successful")
-                    return
-                else:
-                    logger.error(f"❌ Installation method {i} failed: {result.stderr}")
-            except Exception as e:
-                logger.error(f"❌ Installation method {i} error: {e}")
-        
-        # If all methods fail, try to find existing browser
-        logger.info("🔍 Searching for existing browser installations...")
-        possible_paths = [
-            "/app/.cache/ms-playwright/chromium-1091/chrome-linux/chrome",
-            "/root/.cache/ms-playwright/chromium-1091/chrome-linux/chrome",
-            "/usr/bin/chromium-browser",
-            "/usr/bin/google-chrome",
-            "/usr/bin/chrome",
-            "/opt/google/chrome/chrome",
-            "/snap/bin/chromium"
-        ]
-        
-        for path in possible_paths:
-            if os.path.exists(path) and os.access(path, os.X_OK):
-                logger.info(f"✅ Found existing browser at: {path}")
-                # Try to copy to expected location
-                try:
-                    import shutil
-                    target_dir = "/home/scraper/.cache/ms-playwright/chromium-1091/chrome-linux"
-                    os.makedirs(target_dir, exist_ok=True)
-                    shutil.copy2(path, f"{target_dir}/chrome")
-                    os.chmod(f"{target_dir}/chrome", 0o755)
-                    logger.info("✅ Browser copied to expected location")
-                    return
-                except Exception as e:
-                    logger.error(f"❌ Failed to copy browser: {e}")
-        
-        logger.error("❌ All browser installation methods failed")
-
-    async def _launch_with_dynamic_browser(self):
-        """Try to find and launch any available browser"""
-        import os
-        
-        # Search for any available browser
-        possible_paths = [
+        # Check if browser exists
+        browser_paths = [
             "/home/scraper/.cache/ms-playwright/chromium-1091/chrome-linux/chrome",
-            "/app/.cache/ms-playwright/chromium-1091/chrome-linux/chrome",
-            "/root/.cache/ms-playwright/chromium-1091/chrome-linux/chrome",
-            "/usr/bin/chromium-browser",
-            "/usr/bin/google-chrome",
-            "/usr/bin/chrome",
-            "/opt/google/chrome/chrome",
-            "/snap/bin/chromium",
-            "/usr/bin/firefox",
-            "/usr/bin/geckodriver"
+            "/app/.cache/ms-playwright/chromium-1091/chrome-linux/chrome"
         ]
         
-        for path in possible_paths:
-            if os.path.exists(path) and os.access(path, os.X_OK):
-                logger.info(f"🎯 Found browser at: {path}")
-                try:
-                    return await self.playwright.chromium.launch(
-                        headless=True,
-                        executable_path=path,
-                        args=[
-                            '--no-sandbox',
-                            '--disable-setuid-sandbox',
-                            '--disable-dev-shm-usage',
-                            '--disable-accelerated-2d-canvas',
-                            '--no-first-run',
-                            '--no-zygote',
-                            '--disable-gpu'
-                        ]
-                    )
-                except Exception as e:
-                    logger.error(f"❌ Failed to launch browser at {path}: {e}")
-                    continue
+        for path in browser_paths:
+            if os.path.exists(path):
+                logger.info(f"✅ Browser found at {path}")
+                return
         
-        raise Exception("No browser found in any expected location")
+        logger.info("🔧 Installing Playwright browser...")
+        try:
+            result = subprocess.run(
+                ["playwright", "install", "chromium"],
+                capture_output=True,
+                text=True,
+                timeout=180,
+                env={**os.environ, "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD": "0"}
+            )
+            
+            if result.returncode == 0:
+                logger.info("✅ Browser installation successful")
+            else:
+                logger.warning(f"⚠️ Browser installation warning: {result.stderr}")
+                
+        except Exception as e:
+            logger.error(f"❌ Browser installation failed: {e}")
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        if hasattr(self, 'browser'):
-            await self.browser.close()
-        if hasattr(self, 'playwright'):
-            await self.playwright.stop()
+        """Enhanced cleanup"""
+        try:
+            if hasattr(self, 'browser'):
+                await self.browser.close()
+            if hasattr(self, 'playwright'):
+                await self.playwright.stop()
+            logger.info("✅ WebScraper cleaned up successfully")
+        except Exception as e:
+            logger.error(f"❌ Error during cleanup: {e}")
 
     @retry(
         stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=4, max=10),
+        wait=wait_exponential(multiplier=1, min=2, max=5),
         retry=retry_if_exception_type((PlaywrightTimeoutError, Exception))
     )
     async def create_page(self) -> Page:
-        """Create a new browser page with custom settings"""
-        context = await self.browser.new_context(
-            user_agent=random.choice(self.user_agents),
-            viewport={'width': 1920, 'height': 1080},
-            extra_http_headers={
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.5',
-                'Accept-Encoding': 'gzip, deflate',
-                'DNT': '1',
-                'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1',
-            }
-        )
-        
-        page = await context.new_page()
-        
-        # Set default timeout
-        page.set_default_timeout(30000)
-        
-        # Intercept and block unnecessary resources
-        await page.route("**/*.{png,jpg,jpeg,gif,svg,ico,css,woff,woff2,ttf}", lambda route: route.abort())
-        
-        return page
+        """Create a new browser page with optimized settings"""
+        try:
+            context = await self.browser.new_context(
+                user_agent=random.choice(self.user_agents),
+                viewport={'width': 1366, 'height': 768},  # Smaller viewport for performance
+                extra_http_headers={
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.5',
+                    'Accept-Encoding': 'gzip, deflate',
+                    'DNT': '1',
+                    'Connection': 'keep-alive',
+                    'Upgrade-Insecure-Requests': '1',
+                }
+            )
+            
+            page = await context.new_page()
+            
+            # Set optimized timeouts
+            page.set_default_timeout(self.page_timeout)
+            
+            # Block unnecessary resources for better performance
+            await page.route("**/*.{png,jpg,jpeg,gif,svg,ico,css,woff,woff2,ttf,mp4,mp3,pdf}", lambda route: route.abort())
+            
+            return page
+            
+        except Exception as e:
+            logger.error(f"Failed to create page: {e}")
+            raise
 
-    async def random_delay(self, min_delay: float = 2, max_delay: float = 5):
-        """Add random delay between requests"""
+    async def random_delay(self, min_delay: float = 1, max_delay: float = 3):
+        """Optimized delay for faster processing"""
         delay = random.uniform(min_delay, max_delay)
         await asyncio.sleep(delay)
 
-    async def scroll_and_load_content(self, page: Page, max_scrolls: int = 10) -> None:
-        """Scroll to bottom and click load more buttons until all content is loaded"""
-        logger.info("Starting content loading process...")
+    async def scroll_and_load_content(self, page: Page, max_scrolls: int = 5) -> None:
+        """Optimized content loading with timeout protection"""
+        logger.info("Starting optimized content loading...")
         
-        for scroll_attempt in range(max_scrolls):
-            # Scroll to bottom
-            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            await asyncio.sleep(2)
-            
-            # Try to find and click load more buttons
-            load_more_clicked = False
-            for selector in self.load_more_selectors:
-                try:
-                    # Check if element exists and is visible
-                    element = await page.query_selector(selector)
-                    if element:
-                        is_visible = await element.is_visible()
-                        if is_visible:
-                            await element.click()
-                            logger.info(f"Clicked load more button: {selector}")
-                            load_more_clicked = True
-                            await asyncio.sleep(3)  # Wait for content to load
-                            break
-                except Exception as e:
-                    logger.debug(f"Error clicking {selector}: {e}")
-                    continue
-            
-            # If no load more button was clicked, try scrolling again
-            if not load_more_clicked:
-                # Check if we've reached the end
-                old_height = await page.evaluate("document.body.scrollHeight")
-                await asyncio.sleep(2)
-                new_height = await page.evaluate("document.body.scrollHeight")
+        try:
+            for scroll_attempt in range(max_scrolls):
+                # Quick scroll to bottom
+                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                await asyncio.sleep(1)  # Reduced wait time
                 
-                if old_height == new_height:
-                    logger.info("Reached end of page, no more content to load")
-                    break
-        
-        logger.info("Content loading process completed")
+                # Try to find and click load more buttons
+                load_more_clicked = False
+                
+                # Simplified load more detection
+                load_more_buttons = await page.query_selector_all("button, a")
+                
+                for button in load_more_buttons[:5]:  # Limit to first 5 buttons
+                    try:
+                        text_content = await button.text_content()
+                        if text_content and any(keyword in text_content.lower() for keyword in ['load more', 'show more', 'view more']):
+                            is_visible = await button.is_visible()
+                            if is_visible:
+                                await button.click()
+                                logger.info("Clicked load more button")
+                                load_more_clicked = True
+                                await asyncio.sleep(2)
+                                break
+                    except:
+                        continue
+                
+                # Check if we've reached the end
+                if not load_more_clicked:
+                    old_height = await page.evaluate("document.body.scrollHeight")
+                    await asyncio.sleep(1)
+                    new_height = await page.evaluate("document.body.scrollHeight")
+                    
+                    if old_height == new_height:
+                        logger.info("Reached end of page")
+                        break
+            
+            logger.info("Content loading completed")
+            
+        except Exception as e:
+            logger.error(f"Error during content loading: {e}")
 
     async def extract_article_links(self, page: Page, base_url: str) -> List[str]:
-        """Extract all article links from the page"""
+        """Enhanced article link extraction with better error handling"""
         logger.info(f"Extracting article links from {base_url}")
         
         article_links = set()
         
-        # Get page content
-        content = await page.content()
-        soup = BeautifulSoup(content, 'html.parser')
-        
-        # Extract links using various selectors
-        for selector in self.article_selectors:
-            try:
-                elements = soup.select(selector)
-                for element in elements:
-                    href = element.get('href')
-                    if href:
-                        # Make URL absolute
-                        absolute_url = urljoin(base_url, href)
-                        
-                        # Filter out non-article URLs
-                        if self._is_article_url(absolute_url, base_url):
-                            article_links.add(absolute_url)
-            except Exception as e:
-                logger.debug(f"Error extracting links with selector {selector}: {e}")
-        
-        # Also look for links in JavaScript-rendered content
         try:
-            js_links = await page.evaluate("""
-                () => {
-                    const links = [];
-                    const elements = document.querySelectorAll('a[href]');
-                    elements.forEach(el => {
-                        const href = el.href;
-                        if (href && !href.includes('#') && !href.includes('javascript:')) {
-                            links.push(href);
-                        }
-                    });
-                    return links;
-                }
-            """)
+            # Get page content safely
+            content = await page.content()
+            if not content:
+                logger.warning("No page content found")
+                return []
+                
+            soup = BeautifulSoup(content, 'html.parser')
             
-            for link in js_links:
-                if self._is_article_url(link, base_url):
-                    article_links.add(link)
+            # Extract links using various selectors
+            for selector in self.article_selectors:
+                try:
+                    # Use CSS selectors that work with BeautifulSoup
+                    css_selector = selector.replace(':contains(', '[').replace(')', ']') if ':contains(' in selector else selector
+                    elements = soup.select(css_selector)
+                    
+                    for element in elements:
+                        href = element.get('href')
+                        if href:
+                            absolute_url = urljoin(base_url, href)
+                            if self._is_article_url(absolute_url, base_url):
+                                article_links.add(absolute_url)
+                                
+                except Exception as e:
+                    logger.debug(f"Error with selector {selector}: {e}")
+                    continue
+            
+            # Also get links directly from the page
+            try:
+                js_links = await page.evaluate("""
+                    () => {
+                        const links = [];
+                        const elements = document.querySelectorAll('a[href]');
+                        elements.forEach(el => {
+                            const href = el.href;
+                            if (href && !href.includes('#') && !href.includes('javascript:')) {
+                                links.push(href);
+                            }
+                        });
+                        return links;
+                    }
+                """)
+                
+                for link in js_links:
+                    if self._is_article_url(link, base_url):
+                        article_links.add(link)
+                        
+            except Exception as e:
+                logger.debug(f"Error extracting JS links: {e}")
+            
+            filtered_links = list(article_links)
+            logger.info(f"Found {len(filtered_links)} article links")
+            
+            return filtered_links
+            
         except Exception as e:
-            logger.debug(f"Error extracting JS links: {e}")
-        
-        # Remove duplicates and filter
-        filtered_links = list(article_links)
-        logger.info(f"Found {len(filtered_links)} potential article links")
-        
-        return filtered_links
+            logger.error(f"Error extracting article links: {e}")
+            return []
 
     def _is_article_url(self, url: str, base_url: str) -> bool:
-        """Check if URL is likely an article URL"""
-        if not url or url.startswith('#'):
+        """Enhanced URL filtering"""
+        if not url or url.startswith('#') or 'javascript:' in url:
             return False
         
-        # Check for common article patterns
+        # Skip common non-article URLs
+        skip_patterns = [
+            r'/(contact|about|privacy|terms|login|register|search)',
+            r'\.(pdf|doc|xls|zip|mp4|mp3|jpg|png|gif)$',
+            r'/(api|admin|wp-admin|wp-content)',
+            r'mailto:',
+            r'tel:'
+        ]
+        
+        for pattern in skip_patterns:
+            if re.search(pattern, url, re.IGNORECASE):
+                return False
+        
+        # Check for article patterns
         article_patterns = [
             r'/article/',
             r'/blog/',
             r'/news/',
             r'/post/',
             r'/story/',
-            r'/entry/',
-            r'\.html$',
-            r'\.php$',
-            r'\d{4}/\d{2}/',  # Date patterns
+            r'\.html',
+            r'\d{4}/\d{2}/'
         ]
         
         for pattern in article_patterns:
             if re.search(pattern, url, re.IGNORECASE):
                 return True
         
-        # Check if URL is on the same domain
+        # Same domain check
         try:
             parsed_url = urlparse(url)
             parsed_base = urlparse(base_url)
@@ -444,40 +372,48 @@ class WebScraper:
             return False
 
     @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=4, max=10),
+        stop=stop_after_attempt(2),  # Reduced retries for speed
+        wait=wait_exponential(multiplier=1, min=2, max=4),
         retry=retry_if_exception_type((PlaywrightTimeoutError, Exception))
     )
     async def extract_article_content(self, page: Page, article_url: str) -> Dict[str, Any]:
-        """Extract content from a single article page"""
+        """Enhanced article content extraction with timeout protection"""
         logger.info(f"Extracting content from: {article_url}")
         
+        start_time = time.time()
+        
         try:
-            await page.goto(article_url, wait_until='networkidle')
-            await asyncio.sleep(2)
+            # Set shorter timeout for individual articles
+            page.set_default_timeout(self.article_timeout)
+            
+            # Navigate to article
+            await page.goto(article_url, wait_until='domcontentloaded', timeout=self.article_timeout)
+            
+            # Quick wait for content
+            await asyncio.sleep(1)
             
             # Get page content
             content = await page.content()
+            if not content:
+                raise Exception("No page content received")
+            
             soup = BeautifulSoup(content, 'html.parser')
             
-            # Extract title
-            title = self._extract_title(soup)
+            # Extract data with safe methods
+            title = self._safe_extract_title(soup)
+            date = self._safe_extract_date(soup, article_url)
+            content_text = self._safe_extract_content(soup)
+            image_url = self._safe_extract_image(soup, article_url)
             
-            # Extract publication date
-            date = self._extract_date(soup, article_url)
-            
-            # Extract main content
-            content_text = self._extract_content(soup)
-            
-            # Extract image
-            image_url = self._extract_image(soup, article_url)
+            processing_time = time.time() - start_time
             
             return {
                 "title": title,
                 "date": date,
                 "content": content_text,
                 "image": image_url,
-                "url": article_url
+                "url": article_url,
+                "processing_time": round(processing_time, 2)
             }
             
         except Exception as e:
@@ -487,176 +423,197 @@ class WebScraper:
                 "date": "",
                 "content": f"Error: {str(e)}",
                 "image": "",
-                "url": article_url
+                "url": article_url,
+                "processing_time": time.time() - start_time
             }
 
-    def _extract_title(self, soup: BeautifulSoup) -> str:
-        """Extract article title"""
+    def _safe_extract_title(self, soup: BeautifulSoup) -> str:
+        """Safe title extraction with fallbacks"""
         title_selectors = [
             'h1',
             '.article-title',
             '.post-title',
-            '.blog-title',
             '.entry-title',
             '[property="og:title"]',
             'title'
         ]
         
         for selector in title_selectors:
-            element = soup.select_one(selector)
-            if element:
-                title = element.get_text(strip=True)
-                if title and len(title) > 10:
-                    return title
+            try:
+                element = soup.select_one(selector)
+                if element:
+                    title = element.get_text(strip=True)
+                    if title and len(title) > 5:
+                        return title[:200]  # Limit title length
+            except Exception:
+                continue
         
         return "No title found"
 
-    def _extract_date(self, soup: BeautifulSoup, url: str) -> str:
-        """Extract publication date"""
+    def _safe_extract_date(self, soup: BeautifulSoup, url: str) -> str:
+        """Safe date extraction"""
         date_selectors = [
             'time[datetime]',
             '.article-date',
             '.post-date',
-            '.blog-date',
-            '.entry-date',
-            '[property="article:published_time"]',
-            '.date',
-            '.published'
+            '.published',
+            '[property="article:published_time"]'
         ]
         
         for selector in date_selectors:
-            element = soup.select_one(selector)
-            if element:
-                # Try to get datetime attribute first
-                date_attr = element.get('datetime')
-                if date_attr:
-                    return date_attr
-                
-                # Otherwise get text content
-                date_text = element.get_text(strip=True)
-                if date_text:
-                    return date_text
+            try:
+                element = soup.select_one(selector)
+                if element:
+                    date_attr = element.get('datetime')
+                    if date_attr:
+                        return date_attr[:20]  # Limit date length
+                    
+                    date_text = element.get_text(strip=True)
+                    if date_text:
+                        return date_text[:20]
+            except Exception:
+                continue
         
         # Try to extract from URL
-        date_patterns = [
-            r'/(\d{4})/(\d{2})/(\d{2})/',
-            r'/(\d{4})-(\d{2})-(\d{2})',
-            r'(\d{4})/(\d{2})/(\d{2})'
-        ]
-        
-        for pattern in date_patterns:
-            match = re.search(pattern, url)
-            if match:
-                year, month, day = match.groups()
+        try:
+            date_match = re.search(r'/(\d{4})/(\d{2})/(\d{2})/', url)
+            if date_match:
+                year, month, day = date_match.groups()
                 return f"{year}-{month}-{day}"
+        except Exception:
+            pass
         
         return ""
 
-    def _extract_content(self, soup: BeautifulSoup) -> str:
-        """Extract main article content"""
+    def _safe_extract_content(self, soup: BeautifulSoup) -> str:
+        """Safe content extraction"""
         content_selectors = [
             '.article-content',
             '.post-content',
-            '.blog-content',
             '.entry-content',
-            '.content',
             'article',
-            '.main-content',
-            '.article-body'
+            '.content'
         ]
         
         for selector in content_selectors:
-            element = soup.select_one(selector)
-            if element:
-                # Remove unwanted elements
-                for unwanted in element.select('script, style, nav, header, footer, .sidebar, .comments'):
-                    unwanted.decompose()
-                
-                # Get text content
-                content = element.get_text(separator='\n', strip=True)
-                if content and len(content) > 100:
-                    return content
+            try:
+                element = soup.select_one(selector)
+                if element:
+                    # Remove unwanted elements
+                    for unwanted in element.select('script, style, nav, header, footer, .sidebar'):
+                        unwanted.decompose()
+                    
+                    content = element.get_text(separator=' ', strip=True)
+                    if content and len(content) > 50:
+                        return content[:2000]  # Limit content length
+            except Exception:
+                continue
         
-        # Fallback: get all paragraphs
-        paragraphs = soup.find_all('p')
-        if paragraphs:
-            content = '\n'.join([p.get_text(strip=True) for p in paragraphs if p.get_text(strip=True)])
-            if content and len(content) > 100:
-                return content
+        # Fallback to paragraphs
+        try:
+            paragraphs = soup.find_all('p')
+            if paragraphs:
+                content = ' '.join([p.get_text(strip=True) for p in paragraphs[:10]])  # Limit to 10 paragraphs
+                if content and len(content) > 50:
+                    return content[:2000]
+        except Exception:
+            pass
         
         return "No content found"
 
-    def _extract_image(self, soup: BeautifulSoup, base_url: str) -> str:
-        """Extract main article image"""
+    def _safe_extract_image(self, soup: BeautifulSoup, base_url: str) -> str:
+        """Safe image extraction"""
         image_selectors = [
             '[property="og:image"]',
-            '[name="twitter:image"]',
             '.article-image img',
-            '.post-image img',
-            '.blog-image img',
-            '.entry-image img',
             '.featured-image img',
             'article img'
         ]
         
         for selector in image_selectors:
-            element = soup.select_one(selector)
-            if element:
-                src = element.get('src') or element.get('data-src')
-                if src:
-                    return urljoin(base_url, src)
+            try:
+                element = soup.select_one(selector)
+                if element:
+                    src = element.get('src') or element.get('data-src')
+                    if src:
+                        return urljoin(base_url, src)
+            except Exception:
+                continue
         
         return ""
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=4, max=10),
-        retry=retry_if_exception_type((PlaywrightTimeoutError, Exception))
-    )
-    async def scrape_single_site(self, url: str, max_articles: int = 50) -> Dict[str, Any]:
-        """Scrape a single website for articles"""
+    async def scrape_single_site(
+        self, 
+        url: str, 
+        max_articles: int = 15, 
+        delay_range: Tuple[float, float] = (1, 2),
+        timeout_per_article: int = 30
+    ) -> Dict[str, Any]:
+        """Optimized single site scraping with timeout protection"""
         logger.info(f"Starting to scrape: {url}")
         
+        start_time = time.time()
         page = None
+        
         try:
             page = await self.create_page()
             
-            # Navigate to the page
-            await page.goto(url, wait_until='networkidle')
-            await asyncio.sleep(3)
+            # Navigate to main page
+            await page.goto(url, wait_until='domcontentloaded', timeout=self.page_timeout)
+            await asyncio.sleep(2)
             
-            # Scroll and load all content
-            await self.scroll_and_load_content(page)
+            # Load content
+            await self.scroll_and_load_content(page, max_scrolls=3)
             
             # Extract article links
             article_links = await self.extract_article_links(page, url)
             
-            # Limit number of articles
-            if max_articles and len(article_links) > max_articles:
+            # Limit articles for performance
+            max_articles = min(max_articles, 25)  # Hard limit for Render.com
+            if len(article_links) > max_articles:
                 article_links = article_links[:max_articles]
             
             logger.info(f"Found {len(article_links)} articles to process")
             
-            # Extract content from each article
+            # Process articles with timeout protection
             articles = []
+            processing_start = time.time()
+            max_processing_time = 180  # 3 minutes max for all articles
+            
             for i, article_url in enumerate(article_links):
+                # Check overall timeout
+                if time.time() - processing_start > max_processing_time:
+                    logger.warning(f"Overall timeout reached, stopping at article {i}")
+                    break
+                
                 try:
                     logger.info(f"Processing article {i+1}/{len(article_links)}: {article_url}")
-                    article_content = await self.extract_article_content(page, article_url)
+                    
+                    article_content = await asyncio.wait_for(
+                        self.extract_article_content(page, article_url),
+                        timeout=timeout_per_article
+                    )
+                    
                     articles.append(article_content)
                     
-                    # Add delay between article requests
-                    await self.random_delay(1, 3)
+                    # Quick delay between articles
+                    await self.random_delay(*delay_range)
                     
+                except asyncio.TimeoutError:
+                    logger.warning(f"Timeout processing article: {article_url}")
+                    continue
                 except Exception as e:
                     logger.error(f"Error processing article {article_url}: {e}")
                     continue
+            
+            processing_time = time.time() - start_time
             
             return {
                 "base_url": url,
                 "articles": articles,
                 "total_articles_found": len(article_links),
-                "successfully_processed": len(articles)
+                "successfully_processed": len(articles),
+                "processing_time": round(processing_time, 2)
             }
             
         except Exception as e:
@@ -666,38 +623,56 @@ class WebScraper:
                 "articles": [],
                 "error": str(e),
                 "total_articles_found": 0,
-                "successfully_processed": 0
+                "successfully_processed": 0,
+                "processing_time": time.time() - start_time
             }
         finally:
             if page:
-                await page.close()
+                try:
+                    await page.close()
+                except Exception as e:
+                    logger.error(f"Error closing page: {e}")
 
     async def scrape_multiple_sites(
-        self, 
-        urls: List[str], 
-        max_articles_per_url: int = 50,
-        delay_range: Tuple[float, float] = (2, 5)
+        self,
+        urls: List[str],
+        max_articles_per_url: int = 15,
+        delay_range: Tuple[float, float] = (1, 2)
     ) -> Dict[str, Any]:
-        """Scrape multiple websites concurrently"""
+        """Optimized multiple site scraping"""
         logger.info(f"Starting to scrape {len(urls)} websites")
         
         results = {}
         
-        # Process URLs sequentially to avoid overwhelming servers
+        # Process URLs with timeout protection
         for i, url in enumerate(urls):
             try:
                 logger.info(f"Processing URL {i+1}/{len(urls)}: {url}")
                 
-                result = await self.scrape_single_site(url, max_articles_per_url)
-                results[f"scrapeResult{i+1}"] = result
+                # Process with timeout
+                result = await asyncio.wait_for(
+                    self.scrape_single_site(url, max_articles_per_url, delay_range),
+                    timeout=240  # 4 minutes per URL
+                )
                 
-                # Add delay between different websites
+                results[url] = result
+                
+                # Delay between URLs
                 if i < len(urls) - 1:
                     await self.random_delay(*delay_range)
                     
+            except asyncio.TimeoutError:
+                logger.error(f"Timeout processing URL: {url}")
+                results[url] = {
+                    "base_url": url,
+                    "articles": [],
+                    "error": "Timeout error",
+                    "total_articles_found": 0,
+                    "successfully_processed": 0
+                }
             except Exception as e:
                 logger.error(f"Error processing {url}: {e}")
-                results[f"scrapeResult{i+1}"] = {
+                results[url] = {
                     "base_url": url,
                     "articles": [],
                     "error": str(e),
