@@ -13,7 +13,7 @@ from pydantic import BaseModel, HttpUrl
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 import uvicorn
 
-from scraper import WebScraper
+from scraper import GenericWebScraper
 
 # Configure logging
 logging.basicConfig(
@@ -88,7 +88,7 @@ async def scrape_websites(request: ScrapeRequest):
         urls = [str(url) for url in request.base_urls]
         
         # Scrape all URLs
-        async with WebScraper() as scraper:
+        async with GenericWebScraper() as scraper:
             results = await scraper.scrape_multiple_sites(
                 urls=urls,
                 max_articles_per_url=request.max_articles_per_url,

@@ -16,47 +16,34 @@ from dateutil import parser as dateparser
 
 logger = logging.getLogger(__name__)
 
-class WebScraper:
+class GenericWebScraper:
     def __init__(self):
         self.user_agents = [
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15",
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0"
         ]
 
         self.load_more_selectors = [
-            "button:contains('Load More')",
-            "button:contains('Show More')",
-            "button:contains('Load More Articles')",
-            "a:contains('Load More')",
-            "a:contains('Show More')",
-            ".load-more",
-            ".show-more",
-            "[data-load-more]",
-            ".pagination .next",
-            ".pagination a[rel='next']",
-            "button[aria-label*='load']",
-            "button[aria-label*='more']"
+            "button:contains('Load More')", "button:contains('Show More')", "button:contains('More')",
+            "a:contains('Load More')", "a:contains('Show More')", "a:contains('More')",
+            ".load-more", ".show-more", ".more-button", ".load-button",
+            "[data-load-more]", "[data-show-more]", "[data-more]",
+            ".pagination .next", ".pagination a[rel='next']", ".next-page"
         ]
 
         self.article_selectors = [
-            "article a",
-            ".article a",
-            ".post a",
-            ".blog-post a",
-            ".news-item a",
-            ".card a",
-            "a[href*='/article/']",
-            "a[href*='/blog/']",
-            "a[href*='/news/']",
-            "a[href*='/post/']",
-            "a[href*='/details/']",
-            "a:contains('Read More')",
-            "a:contains('Read more')",
-            "a:contains('Details')",
-            "a:contains('Continue reading')"
+            "article a", "main a", ".content a", ".main a",
+            ".article a", ".post a", ".news a", ".blog a", ".story a",
+            ".article-item a", ".post-item a", ".news-item a", ".blog-item a",
+            ".article-card a", ".post-card a", ".news-card a", ".blog-card a",
+            ".item a", ".card a", ".tile a", ".box a", ".entry a",
+            "a[href*='/article']", "a[href*='/post']", "a[href*='/news']", 
+            "a[href*='/blog']", "a[href*='/story']", "a[href*='/details']",
+            "a[href*='/2024/']", "a[href*='/2025/']", "a[href*='/2023/']",
+            "a:contains('Read More')", "a:contains('Continue')", "a:contains('Details')",
+            "h1 a", "h2 a", "h3 a", "h4 a",
+            "a[href$='.html']"
         ]
 
     async def __aenter__(self):
@@ -81,259 +68,172 @@ class WebScraper:
         if hasattr(self, 'playwright'):
             await self.playwright.stop()
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=4, max=10),
-        retry=retry_if_exception_type((PlaywrightTimeoutError, Exception))
-    )
     async def create_page(self) -> Page:
-        """Create a new browser page with custom settings"""
         context = await self.browser.new_context(
             user_agent=random.choice(self.user_agents),
-            viewport={'width': 1920, 'height': 1080},
-            extra_http_headers={
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.5',
-                'Accept-Encoding': 'gzip, deflate',
-                'DNT': '1',
-                'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1',
-            }
+            viewport={'width': 1920, 'height': 1080}
         )
         page = await context.new_page()
-        # Set default timeout
         page.set_default_timeout(30000)
-        # Intercept and block unnecessary resources
         await page.route("**/*.{png,jpg,jpeg,gif,svg,ico,css,woff,woff2,ttf}", lambda route: route.abort())
         return page
 
-    async def random_delay(self, min_delay: float = 2, max_delay: float = 5):
-        """Add random delay between requests"""
-        delay = random.uniform(min_delay, max_delay)
-        await asyncio.sleep(delay)
-
-    async def scroll_and_load_content(self, page: Page, max_scrolls: int = 5) -> None:
-        """Scroll to bottom and click load more buttons until all content is loaded"""
+    async def scroll_and_load_content(self, page: Page, max_scrolls: int = 3) -> None:
         logger.info("Starting content loading process...")
         
         for scroll_attempt in range(max_scrolls):
-            # Scroll to bottom
             await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
             await asyncio.sleep(2)
 
-            # Try to find and click load more buttons
             load_more_clicked = False
             for selector in self.load_more_selectors:
                 try:
-                    # Check if element exists and is visible
                     element = await page.query_selector(selector)
-                    if element:
-                        is_visible = await element.is_visible()
-                        if is_visible:
-                            await element.click()
-                            logger.info(f"Clicked load more button: {selector}")
-                            load_more_clicked = True
-                            await asyncio.sleep(3)  # Wait for content to load
-                            break
-                except Exception as e:
-                    logger.debug(f"Error clicking {selector}: {e}")
+                    if element and await element.is_visible():
+                        await element.click()
+                        logger.info(f"Clicked load more button: {selector}")
+                        load_more_clicked = True
+                        await asyncio.sleep(3)
+                        break
+                except:
                     continue
 
-            # If no load more button was clicked, try scrolling again
             if not load_more_clicked:
-                # Check if we've reached the end
                 old_height = await page.evaluate("document.body.scrollHeight")
                 await asyncio.sleep(2)
                 new_height = await page.evaluate("document.body.scrollHeight")
-                
                 if old_height == new_height:
-                    logger.info("Reached end of page, no more content to load")
                     break
 
         logger.info("Content loading process completed")
 
+    def _is_likely_article_url(self, url: str, base_url: str) -> bool:
+        if not url or url.startswith('#') or 'javascript:' in url:
+            return False
+
+        url_lower = url.lower()
+        parsed_url = urlparse(url)
+        
+        # Must be same domain
+        try:
+            parsed_base = urlparse(base_url)
+            if parsed_url.netloc != parsed_base.netloc:
+                return False
+        except:
+            return False
+
+        # Universal excludes
+        definite_excludes = [
+            r'/search', r'/login', r'/register', r'/contact', r'/about', 
+            r'/privacy', r'/terms', r'/cookie', r'/legal', r'/sitemap',
+            r'\.css', r'\.js', r'\.pdf', r'\.doc', r'\.zip', 
+            r'/feed', r'/rss', r'/tag(?:s)?/', r'/category/', 
+            r'/author/', r'/user/', r'/admin', r'#', r'mailto:', r'tel:'
+        ]
+        
+        for pattern in definite_excludes:
+            if re.search(pattern, url_lower):
+                return False
+
+        # Strong positive signals
+        strong_signals = [
+            r'/article/', r'/post/', r'/news/', r'/blog/', r'/story/',
+            r'/read/', r'/view/', r'/details/', r'/full/',
+            r'/\d{4}/\d{2}/\d{2}/', r'/\d{4}/\d{2}/', r'/\d{4}/',
+            r'-\d{4}-\d{2}-\d{2}', r'-\d{4}-\d{2}', r'-\d{4}',
+        ]
+        
+        for pattern in strong_signals:
+            if re.search(pattern, url_lower):
+                return True
+
+        # Medium signals
+        medium_signals = [
+            r'\.html$', r'\.htm$', r'/\w+/\w+', r'/[^/]{10,}',
+            r'/entry/', r'/item/', r'/content/', r'/page/',
+        ]
+        
+        has_medium_signal = any(re.search(pattern, url_lower) for pattern in medium_signals)
+        
+        # Content keywords
+        content_keywords = [
+            'breaking', 'exclusive', 'report', 'analysis', 'interview',
+            'feature', 'opinion', 'editorial', 'review', 'update',
+            'announcement', 'launch', 'release', 'study', 'research'
+        ]
+        
+        has_content_keyword = any(keyword in url_lower for keyword in content_keywords)
+        
+        path_parts = [part for part in parsed_url.path.split('/') if part]
+        
+        if len(path_parts) < 2 and not has_content_keyword:
+            return False
+            
+        if len(parsed_url.query.split('&')) > 3:
+            return False
+
+        return has_medium_signal or has_content_keyword
+
     async def extract_article_links(self, page: Page, base_url: str) -> List[str]:
-        """Extract all article links from the page"""
         logger.info(f"Extracting article links from {base_url}")
         article_links = set()
 
-        # Get page content
-        content = await page.content()
-        soup = BeautifulSoup(content, 'html.parser')
-
-        # Extract links using various selectors
-        for selector in self.article_selectors:
-            try:
-                elements = soup.select(selector)
-                for element in elements:
-                    href = element.get('href')
-                    if href:
-                        # Make URL absolute
-                        absolute_url = urljoin(base_url, href)
-                        # Filter out non-article URLs
-                        if self._is_article_url(absolute_url, base_url):
-                            article_links.add(absolute_url)
-            except Exception as e:
-                logger.debug(f"Error extracting links with selector {selector}: {e}")
-
-        # Also look for links in JavaScript-rendered content
         try:
-            js_links = await page.evaluate("""
+            all_links = await page.evaluate("""
                 () => {
                     const links = [];
                     const elements = document.querySelectorAll('a[href]');
                     elements.forEach(el => {
                         const href = el.href;
-                        if (href && !href.includes('#') && !href.includes('javascript:')) {
+                        if (href && href !== window.location.href) {
                             links.push(href);
                         }
                     });
-                    return links;
+                    return [...new Set(links)];
                 }
             """)
             
-            for link in js_links:
-                if self._is_article_url(link, base_url):
+            for link in all_links:
+                if self._is_likely_article_url(link, base_url):
                     article_links.add(link)
+                    
         except Exception as e:
-            logger.debug(f"Error extracting JS links: {e}")
+            logger.error(f"Error extracting links: {e}")
 
-        # Remove duplicates and filter
+        try:
+            content = await page.content()
+            soup = BeautifulSoup(content, 'html.parser')
+            
+            for selector in self.article_selectors[:10]:
+                elements = soup.select(selector)
+                for element in elements[:50]:
+                    href = element.get('href')
+                    if href:
+                        absolute_url = urljoin(base_url, href)
+                        if self._is_likely_article_url(absolute_url, base_url):
+                            article_links.add(absolute_url)
+                            
+        except Exception as e:
+            logger.debug(f"BeautifulSoup extraction failed: {e}")
+
         filtered_links = list(article_links)
         logger.info(f"Found {len(filtered_links)} potential article links")
-        
         return filtered_links
 
-    def _is_article_url(self, url: str, base_url: str) -> bool:
-        """Check if URL is likely an article URL with improved filtering"""
-        if not url or url.startswith('#'):
-            return False
-
-        # Convert to lowercase for case-insensitive matching
-        url_lower = url.lower()
-        
-        # Exclude common non-article pages
-        exclude_patterns = [
-            r'/contact',
-            r'/about',
-            r'/download',
-            r'/products?/',
-            r'/services?/',
-            r'/info-centre',
-            r'/press-corner',
-            r'/safety-data-sheets',
-            r'/datanorm-gaeb',
-            r'/newsletter',
-            r'/fairs',
-            r'/variotime',
-            r'/data-protection',
-            r'/privacy',
-            r'/terms',
-            r'/driving-directions',
-            r'/brochures?',
-            r'/technical-information',
-            r'/invitation-to-tender',
-            r'/warning-placard',
-            r'/helpful-forms',
-            r'/index\.html?$',
-            r'/$',  # Root URLs
-            r'/en/?$',  # Language root URLs
-        ]
-        
-        # Check if URL matches any exclude pattern
-        for pattern in exclude_patterns:
-            if re.search(pattern, url_lower):
-                logger.debug(f"Excluding URL (non-article pattern): {url}")
-                return False
-
-        # Only include URLs that match article patterns
-        article_patterns = [
-            r'/news/.*details/',  # News detail pages
-            r'/article/',
-            r'/blog/',
-            r'/news/',
-            r'/post/',
-            r'/story/',
-            r'/entry/',
-            r'/details/.*(?:project|article|news)',  # Details with specific keywords
-            r'\d{4}/\d{2}/',  # Date patterns in URL
-            r'/projects?-of-the-month',  # Project features
-        ]
-        
-        # Must match at least one article pattern
-        has_article_pattern = False
-        for pattern in article_patterns:
-            if re.search(pattern, url_lower):
-                has_article_pattern = True
-                break
-        
-        if not has_article_pattern:
-            # Also check for HTML files that might be articles but only if they have meaningful content indicators
-            if re.search(r'\.html?$', url_lower):
-                # Check if URL has meaningful content indicators
-                content_indicators = [
-                    r'restoration',
-                    r'designer',
-                    r'defense-tower',
-                    r'underfloor-heating',
-                    r'kindergarten',
-                    r'vienna',
-                    r'france',
-                    r'tamasi',
-                    r'banking',
-                    r'aegean'
-                ]
-                
-                for indicator in content_indicators:
-                    if re.search(indicator, url_lower):
-                        has_article_pattern = True
-                        break
-        
-        if not has_article_pattern:
-            logger.debug(f"Excluding URL (no article pattern): {url}")
-            return False
-
-        # Check if URL is on the same domain
-        try:
-            parsed_url = urlparse(url)
-            parsed_base = urlparse(base_url)
-            if parsed_url.netloc != parsed_base.netloc:
-                logger.debug(f"Excluding URL (different domain): {url}")
-                return False
-        except:
-            return False
-
-        logger.debug(f"Including URL as potential article: {url}")
-        return True
-
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=4, max=10),
-        retry=retry_if_exception_type((PlaywrightTimeoutError, Exception))
-    )
     async def extract_article_content(self, page: Page, article_url: str) -> Dict[str, Any]:
-        """Extract content from a single article page"""
         logger.info(f"Extracting content from: {article_url}")
         
         try:
-            await page.goto(article_url, wait_until='networkidle')
-            await asyncio.sleep(2)
+            await page.goto(article_url, wait_until='domcontentloaded', timeout=30000)
+            await asyncio.sleep(1)
 
-            # Get page content
             content = await page.content()
             soup = BeautifulSoup(content, 'html.parser')
 
-            # Extract title
-            title = self._extract_title(soup)
-            
-            # Extract publication date
-            date = self._extract_date(soup, article_url)
-            
-            # Extract main content
-            content_text = self._extract_content(soup)
-            
-            # Extract image
-            image_url = self._extract_image(soup, article_url)
+            title = self._extract_title_generic(soup)
+            date = self._extract_date_generic(soup, article_url)
+            content_text = self._extract_content_generic(soup)
+            image_url = self._extract_image_generic(soup, article_url)
 
             return {
                 "title": title,
@@ -353,174 +253,141 @@ class WebScraper:
                 "url": article_url
             }
 
-    def _extract_title(self, soup: BeautifulSoup) -> str:
-        """Extract article title"""
-        title_selectors = [
-            'h1',
-            '.article-title',
-            '.post-title',
-            '.blog-title',
-            '.entry-title',
-            '[property="og:title"]',
-            'title'
+    def _extract_title_generic(self, soup: BeautifulSoup) -> str:
+        title_methods = [
+            lambda: soup.find('meta', property='og:title'),
+            lambda: soup.find('meta', name='twitter:title'),
+            lambda: soup.find('h1'),
+            lambda: soup.select_one('.title, .headline, .post-title, .article-title, .entry-title'),
+            lambda: soup.find('title')
         ]
 
-        for selector in title_selectors:
-            element = soup.select_one(selector)
-            if element:
-                title = element.get_text(strip=True)
-                if title and len(title) > 10:
-                    return title
+        for method in title_methods:
+            try:
+                element = method()
+                if element:
+                    title = element.get('content', '') or element.get_text(strip=True)
+                    if title and len(title.strip()) > 5:
+                        return title.strip()
+            except:
+                continue
 
         return "No title found"
 
-    def _extract_date(self, soup: BeautifulSoup, url: str) -> str:
-        """Extract publication date"""
-        date_selectors = [
-            'time[datetime]',
-            '.article-date',
-            '.post-date',
-            '.blog-date',
-            '.entry-date',
-            '[property="article:published_time"]',
-            '.date',
-            '.published'
+    def _extract_date_generic(self, soup: BeautifulSoup, url: str) -> str:
+        date_methods = [
+            lambda: soup.find('time', attrs={'datetime': True}),
+            lambda: soup.find('meta', property='article:published_time'),
+            lambda: soup.find('meta', name='pubdate'),
+            lambda: soup.select_one('.date, .published, .post-date, .article-date, .timestamp'),
         ]
 
-        for selector in date_selectors:
-            element = soup.select_one(selector)
-            if element:
-                # Try to get datetime attribute first
-                date_attr = element.get('datetime')
-                if date_attr:
-                    return date_attr
-                
-                # Otherwise get text content
-                date_text = element.get_text(strip=True)
-                if date_text:
-                    return date_text
+        for method in date_methods:
+            try:
+                element = method()
+                if element:
+                    date = element.get('datetime') or element.get('content') or element.get_text(strip=True)
+                    if date:
+                        return date.strip()
+            except:
+                continue
 
-        # Try to extract from URL
+        # Extract date from URL
         date_patterns = [
             r'/(\d{4})/(\d{2})/(\d{2})/',
             r'/(\d{4})-(\d{2})-(\d{2})',
-            r'(\d{4})/(\d{2})/(\d{2})'
+            r'/(\d{4})/(\d{2})/',
+            r'/(\d{4})-(\d{2})',
         ]
 
         for pattern in date_patterns:
             match = re.search(pattern, url)
             if match:
-                year, month, day = match.groups()
-                return f"{year}-{month}-{day}"
+                return '-'.join(match.groups())
 
         return ""
 
-    def _extract_content(self, soup: BeautifulSoup) -> str:
-        """Extract main article content"""
-        content_selectors = [
-            '.article-content',
-            '.post-content',
-            '.blog-content',
-            '.entry-content',
-            '.content',
-            'article',
-            '.main-content',
-            '.article-body'
+    def _extract_content_generic(self, soup: BeautifulSoup) -> str:
+        # Remove unwanted elements
+        for unwanted in soup.select('script, style, nav, header, footer, aside, .sidebar, .menu, .navigation, .comments, .ads'):
+            unwanted.decompose()
+
+        content_methods = [
+            lambda: soup.find('div', class_=re.compile(r'content|article|post|entry|main', re.I)),
+            lambda: soup.find('article'),
+            lambda: soup.find('main'),
+            lambda: soup.find('div', attrs={'role': 'main'}),
         ]
 
-        for selector in content_selectors:
-            element = soup.select_one(selector)
-            if element:
-                # Remove unwanted elements
-                for unwanted in element.select('script, style, nav, header, footer, .sidebar, .comments'):
-                    unwanted.decompose()
-                
-                # Get text content
-                content = element.get_text(separator='\n', strip=True)
-                if content and len(content) > 100:
-                    return content
+        for method in content_methods:
+            try:
+                element = method()
+                if element:
+                    text_elements = element.find_all(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li'])
+                    content = '\n'.join([elem.get_text(strip=True) for elem in text_elements if elem.get_text(strip=True)])
+                    if len(content) > 100:
+                        return content
+            except:
+                continue
 
-        # Fallback: get all paragraphs
+        # Fallback
         paragraphs = soup.find_all('p')
         if paragraphs:
             content = '\n'.join([p.get_text(strip=True) for p in paragraphs if p.get_text(strip=True)])
-            if content and len(content) > 100:
+            if len(content) > 100:
                 return content
 
         return "No content found"
 
-    def _extract_image(self, soup: BeautifulSoup, base_url: str) -> str:
-        """Extract main article image"""
-        image_selectors = [
-            '[property="og:image"]',
-            '[name="twitter:image"]',
-            '.article-image img',
-            '.post-image img',
-            '.blog-image img',
-            '.entry-image img',
-            '.featured-image img',
-            'article img'
+    def _extract_image_generic(self, soup: BeautifulSoup, base_url: str) -> str:
+        image_methods = [
+            lambda: soup.find('meta', property='og:image'),
+            lambda: soup.find('meta', name='twitter:image'),
+            lambda: soup.select_one('article img, .content img, .post img, .article img'),
+            lambda: soup.find('img'),
         ]
 
-        for selector in image_selectors:
-            element = soup.select_one(selector)
-            if element:
-                src = element.get('src') or element.get('data-src')
-                if src:
-                    return urljoin(base_url, src)
+        for method in image_methods:
+            try:
+                element = method()
+                if element:
+                    src = element.get('content') or element.get('src') or element.get('data-src')
+                    if src:
+                        return urljoin(base_url, src)
+            except:
+                continue
 
         return ""
 
-    def _is_within_week_window(self, date_str: str, week_start: datetime, week_end: datetime) -> bool:
-        """Check if article date is within the specified week window"""
+    def _is_within_time_window(self, date_str: str, days_back: int = 7) -> bool:
         if not date_str:
-            # If no date found, include it (could be recent)
-            logger.debug(f"No date found, including article")
             return True
 
         try:
-            # Parse the date string
             pub_dt = dateparser.parse(date_str)
             if not pub_dt:
-                logger.debug(f"Could not parse date '{date_str}', including article")
                 return True
 
-            # Ensure timezone awareness
             if not pub_dt.tzinfo:
                 pub_dt = pub_dt.replace(tzinfo=timezone.utc)
             else:
                 pub_dt = pub_dt.astimezone(timezone.utc)
 
-            # Check if within window
-            is_within = week_start <= pub_dt < week_end
-            logger.debug(f"Date '{date_str}' parsed as {pub_dt}, within window: {is_within}")
-            return is_within
+            cutoff_date = datetime.now(timezone.utc) - timedelta(days=days_back)
+            return pub_dt >= cutoff_date
             
         except Exception as e:
-            logger.debug(f"Date parse error for '{date_str}': {e}, including article")
+            logger.debug(f"Date parse error for '{date_str}': {e}")
             return True
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=4, max=10),
-        retry=retry_if_exception_type((PlaywrightTimeoutError, Exception))
-    )
     async def scrape_single_site(
         self,
         url: str,
-        max_articles: int = 20,  # Reduced default
-        week_start: Optional[datetime] = None,
-        week_end: Optional[datetime] = None,
+        max_articles: int = 10,
+        days_back: int = 7,
         seen_urls: Optional[set] = None
     ) -> Dict[str, Any]:
-        """Scrape a single website for articles with date filtering and deduplication"""
         logger.info(f"Starting to scrape: {url}")
-
-        # Default to current week if not provided
-        if week_start is None or week_end is None:
-            now = datetime.now(timezone.utc)
-            week_start = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
-            week_end = week_start + timedelta(days=7)
 
         if seen_urls is None:
             seen_urls = set()
@@ -528,75 +395,46 @@ class WebScraper:
         page = None
         try:
             page = await self.create_page()
-            
-            # Navigate to the page
-            await page.goto(url, wait_until='networkidle')
-            await asyncio.sleep(3)
+            await page.goto(url, wait_until='domcontentloaded')
+            await asyncio.sleep(2)
 
-            # Scroll and load all content
             await self.scroll_and_load_content(page)
-
-            # Extract article links
             article_links = await self.extract_article_links(page, url)
 
-            # Limit number of articles to check
-            if max_articles and len(article_links) > max_articles:
+            if max_articles:
                 article_links = article_links[:max_articles]
 
-            logger.info(f"Found {len(article_links)} articles to process")
+            logger.info(f"Processing {len(article_links)} article links")
 
-            # Extract content from each article with filtering
             articles = []
-            processed_count = 0
-            
             for i, article_url in enumerate(article_links):
-                try:
-                    # Skip if already seen
-                    if article_url in seen_urls:
-                        logger.debug(f"Skipping already seen URL: {article_url}")
-                        continue
-
-                    logger.info(f"Processing article {i+1}/{len(article_links)}: {article_url}")
-                    
-                    article_content = await self.extract_article_content(page, article_url)
-                    
-                    # Check if article is within the week window
-                    article_date = article_content.get("date", "")
-                    if not self._is_within_week_window(article_date, week_start, week_end):
-                        logger.debug(f"Article {article_url} is outside week window, skipping")
-                        continue
-
-                    # Add hash for additional deduplication
-                    title = article_content.get("title", "")
-                    raw_hash = hashlib.sha256(
-                        (title + article_url).encode("utf-8")
-                    ).hexdigest()
-                    
-                    article_content["raw_hash"] = raw_hash
-                    article_content["discovered_at"] = datetime.now(timezone.utc).isoformat()
-                    
-                    articles.append(article_content)
-                    processed_count += 1
-                    
-                    # Add to seen URLs
-                    seen_urls.add(article_url)
-
-                    # Add delay between article requests
-                    await self.random_delay(1, 3)
-
-                except Exception as e:
-                    logger.error(f"Error processing article {article_url}: {e}")
+                if article_url in seen_urls:
                     continue
 
-            logger.info(f"Scraped {len(articles)} articles within week window from {url}")
+                logger.info(f"Processing article {i+1}/{len(article_links)}: {article_url}")
+                
+                article_content = await self.extract_article_content(page, article_url)
+                
+                if not self._is_within_time_window(article_content.get("date", ""), days_back):
+                    continue
+
+                article_content["raw_hash"] = hashlib.sha256(
+                    (article_content.get("title", "") + article_url).encode("utf-8")
+                ).hexdigest()
+                article_content["discovered_at"] = datetime.now(timezone.utc).isoformat()
+                
+                articles.append(article_content)
+                seen_urls.add(article_url)
+
+                await asyncio.sleep(random.uniform(1, 3))
+
+            logger.info(f"Successfully scraped {len(articles)} articles from {url}")
             
             return {
                 "base_url": url,
                 "articles": articles,
-                "total_articles_found": len(article_links),
-                "successfully_processed": processed_count,
-                "week_start": week_start.isoformat(),
-                "week_end": week_end.isoformat()
+                "total_links_found": len(article_links),
+                "articles_processed": len(articles)
             }
 
         except Exception as e:
@@ -605,10 +443,8 @@ class WebScraper:
                 "base_url": url,
                 "articles": [],
                 "error": str(e),
-                "total_articles_found": 0,
-                "successfully_processed": 0,
-                "week_start": week_start.isoformat() if week_start else None,
-                "week_end": week_end.isoformat() if week_end else None
+                "total_links_found": 0,
+                "articles_processed": 0
             }
 
         finally:
@@ -618,53 +454,34 @@ class WebScraper:
     async def scrape_multiple_sites(
         self,
         urls: List[str],
-        max_articles_per_url: int = 20,  # Reduced default
-        delay_range: Tuple[float, float] = (2, 5),
-        week_start: Optional[datetime] = None,
-        week_end: Optional[datetime] = None,
-        seen_urls: Optional[List[str]] = None
+        max_articles_per_site: int = 10,
+        days_back: int = 7
     ) -> Dict[str, Any]:
-        """Scrape multiple websites concurrently with date filtering and deduplication"""
+        """Main method called by your existing API"""
         logger.info(f"Starting to scrape {len(urls)} websites")
 
-        # Convert seen_urls list to set for faster lookups
-        seen_set = set(seen_urls or [])
+        seen_urls = set()
         results = {}
 
-        # Process URLs sequentially to avoid overwhelming servers
         for i, url in enumerate(urls):
             try:
-                logger.info(f"Processing URL {i+1}/{len(urls)}: {url}")
+                logger.info(f"Processing site {i+1}/{len(urls)}: {url}")
                 
                 result = await self.scrape_single_site(
-                    url,
-                    max_articles_per_url,
-                    week_start=week_start,
-                    week_end=week_end,
-                    seen_urls=seen_set
+                    url, max_articles_per_site, days_back, seen_urls
                 )
-
-                # Add newly found URLs to seen set for subsequent sites
-                for article in result.get("articles", []):
-                    seen_set.add(article["url"])
-
+                
                 results[f"scrapeResult{i+1}"] = result
-
-                # Add delay between different websites
+                
                 if i < len(urls) - 1:
-                    await self.random_delay(*delay_range)
+                    await asyncio.sleep(random.uniform(2, 5))
 
             except Exception as e:
                 logger.error(f"Error processing {url}: {e}")
                 results[f"scrapeResult{i+1}"] = {
                     "base_url": url,
                     "articles": [],
-                    "error": str(e),
-                    "total_articles_found": 0,
-                    "successfully_processed": 0,
-                    "week_start": week_start.isoformat() if week_start else None,
-                    "week_end": week_end.isoformat() if week_end else None
+                    "error": str(e)
                 }
 
-        logger.info(f"Completed scraping {len(urls)} websites")
         return results
