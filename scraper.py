@@ -359,7 +359,7 @@ class GenericWebScraper:
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=4, max=10),
-        retry_retry_if_exception_type((PlaywrightTimeoutError, Exception))
+        retry=retry_if_exception_type((PlaywrightTimeoutError, Exception))
     )
     async def extract_article_content(self, page: Page, article_url: str) -> Dict[str, Any]:
         """Extract content from a single article page"""
