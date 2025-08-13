@@ -8,6 +8,7 @@ from typing import List, Dict, Any, Optional, Tuple
 from urllib.parse import urljoin, urlparse
 from datetime import datetime, timezone, timedelta
 import json
+
 from playwright.async_api import async_playwright, Browser, Page, TimeoutError as PlaywrightTimeoutError
 from bs4 import BeautifulSoup
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
@@ -51,6 +52,7 @@ class WebScraper:
             "a[href*='/blog/']",
             "a[href*='/news/']",
             "a[href*='/post/']",
+            "a[href*='/details/']",
             "a:contains('Read More')",
             "a:contains('Read more')",
             "a:contains('Details')",
@@ -110,9 +112,10 @@ class WebScraper:
         delay = random.uniform(min_delay, max_delay)
         await asyncio.sleep(delay)
 
-    async def scroll_and_load_content(self, page: Page, max_scrolls: int = 10) -> None:
+    async def scroll_and_load_content(self, page: Page, max_scrolls: int = 5) -> None:
         """Scroll to bottom and click load more buttons until all content is loaded"""
         logger.info("Starting content loading process...")
+        
         for scroll_attempt in range(max_scrolls):
             # Scroll to bottom
             await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
@@ -142,6 +145,7 @@ class WebScraper:
                 old_height = await page.evaluate("document.body.scrollHeight")
                 await asyncio.sleep(2)
                 new_height = await page.evaluate("document.body.scrollHeight")
+                
                 if old_height == new_height:
                     logger.info("Reached end of page, no more content to load")
                     break
@@ -187,6 +191,7 @@ class WebScraper:
                     return links;
                 }
             """)
+            
             for link in js_links:
                 if self._is_article_url(link, base_url):
                     article_links.add(link)
@@ -196,37 +201,110 @@ class WebScraper:
         # Remove duplicates and filter
         filtered_links = list(article_links)
         logger.info(f"Found {len(filtered_links)} potential article links")
+        
         return filtered_links
 
     def _is_article_url(self, url: str, base_url: str) -> bool:
-        """Check if URL is likely an article URL"""
+        """Check if URL is likely an article URL with improved filtering"""
         if not url or url.startswith('#'):
             return False
 
-        # Check for common article patterns
+        # Convert to lowercase for case-insensitive matching
+        url_lower = url.lower()
+        
+        # Exclude common non-article pages
+        exclude_patterns = [
+            r'/contact',
+            r'/about',
+            r'/download',
+            r'/products?/',
+            r'/services?/',
+            r'/info-centre',
+            r'/press-corner',
+            r'/safety-data-sheets',
+            r'/datanorm-gaeb',
+            r'/newsletter',
+            r'/fairs',
+            r'/variotime',
+            r'/data-protection',
+            r'/privacy',
+            r'/terms',
+            r'/driving-directions',
+            r'/brochures?',
+            r'/technical-information',
+            r'/invitation-to-tender',
+            r'/warning-placard',
+            r'/helpful-forms',
+            r'/index\.html?$',
+            r'/$',  # Root URLs
+            r'/en/?$',  # Language root URLs
+        ]
+        
+        # Check if URL matches any exclude pattern
+        for pattern in exclude_patterns:
+            if re.search(pattern, url_lower):
+                logger.debug(f"Excluding URL (non-article pattern): {url}")
+                return False
+
+        # Only include URLs that match article patterns
         article_patterns = [
+            r'/news/.*details/',  # News detail pages
             r'/article/',
             r'/blog/',
             r'/news/',
             r'/post/',
             r'/story/',
             r'/entry/',
-            r'\.html$',
-            r'\.php$',
-            r'\d{4}/\d{2}/',  # Date patterns
+            r'/details/.*(?:project|article|news)',  # Details with specific keywords
+            r'\d{4}/\d{2}/',  # Date patterns in URL
+            r'/projects?-of-the-month',  # Project features
         ]
-
+        
+        # Must match at least one article pattern
+        has_article_pattern = False
         for pattern in article_patterns:
-            if re.search(pattern, url, re.IGNORECASE):
-                return True
+            if re.search(pattern, url_lower):
+                has_article_pattern = True
+                break
+        
+        if not has_article_pattern:
+            # Also check for HTML files that might be articles but only if they have meaningful content indicators
+            if re.search(r'\.html?$', url_lower):
+                # Check if URL has meaningful content indicators
+                content_indicators = [
+                    r'restoration',
+                    r'designer',
+                    r'defense-tower',
+                    r'underfloor-heating',
+                    r'kindergarten',
+                    r'vienna',
+                    r'france',
+                    r'tamasi',
+                    r'banking',
+                    r'aegean'
+                ]
+                
+                for indicator in content_indicators:
+                    if re.search(indicator, url_lower):
+                        has_article_pattern = True
+                        break
+        
+        if not has_article_pattern:
+            logger.debug(f"Excluding URL (no article pattern): {url}")
+            return False
 
         # Check if URL is on the same domain
         try:
             parsed_url = urlparse(url)
             parsed_base = urlparse(base_url)
-            return parsed_url.netloc == parsed_base.netloc
+            if parsed_url.netloc != parsed_base.netloc:
+                logger.debug(f"Excluding URL (different domain): {url}")
+                return False
         except:
             return False
+
+        logger.debug(f"Including URL as potential article: {url}")
+        return True
 
     @retry(
         stop=stop_after_attempt(3),
@@ -236,6 +314,7 @@ class WebScraper:
     async def extract_article_content(self, page: Page, article_url: str) -> Dict[str, Any]:
         """Extract content from a single article page"""
         logger.info(f"Extracting content from: {article_url}")
+        
         try:
             await page.goto(article_url, wait_until='networkidle')
             await asyncio.sleep(2)
@@ -246,13 +325,13 @@ class WebScraper:
 
             # Extract title
             title = self._extract_title(soup)
-
+            
             # Extract publication date
             date = self._extract_date(soup, article_url)
-
+            
             # Extract main content
             content_text = self._extract_content(soup)
-
+            
             # Extract image
             image_url = self._extract_image(soup, article_url)
 
@@ -315,7 +394,7 @@ class WebScraper:
                 date_attr = element.get('datetime')
                 if date_attr:
                     return date_attr
-
+                
                 # Otherwise get text content
                 date_text = element.get_text(strip=True)
                 if date_text:
@@ -355,7 +434,7 @@ class WebScraper:
                 # Remove unwanted elements
                 for unwanted in element.select('script, style, nav, header, footer, .sidebar, .comments'):
                     unwanted.decompose()
-
+                
                 # Get text content
                 content = element.get_text(separator='\n', strip=True)
                 if content and len(content) > 100:
@@ -395,25 +474,31 @@ class WebScraper:
     def _is_within_week_window(self, date_str: str, week_start: datetime, week_end: datetime) -> bool:
         """Check if article date is within the specified week window"""
         if not date_str:
-            return False
-        
+            # If no date found, include it (could be recent)
+            logger.debug(f"No date found, including article")
+            return True
+
         try:
             # Parse the date string
             pub_dt = dateparser.parse(date_str)
             if not pub_dt:
-                return False
-            
+                logger.debug(f"Could not parse date '{date_str}', including article")
+                return True
+
             # Ensure timezone awareness
             if not pub_dt.tzinfo:
                 pub_dt = pub_dt.replace(tzinfo=timezone.utc)
             else:
                 pub_dt = pub_dt.astimezone(timezone.utc)
-            
+
             # Check if within window
-            return week_start <= pub_dt < week_end
+            is_within = week_start <= pub_dt < week_end
+            logger.debug(f"Date '{date_str}' parsed as {pub_dt}, within window: {is_within}")
+            return is_within
+            
         except Exception as e:
-            logger.debug(f"Date parse error for '{date_str}': {e}")
-            return False
+            logger.debug(f"Date parse error for '{date_str}': {e}, including article")
+            return True
 
     @retry(
         stop=stop_after_attempt(3),
@@ -421,29 +506,29 @@ class WebScraper:
         retry=retry_if_exception_type((PlaywrightTimeoutError, Exception))
     )
     async def scrape_single_site(
-        self, 
-        url: str, 
-        max_articles: int = 50,
+        self,
+        url: str,
+        max_articles: int = 20,  # Reduced default
         week_start: Optional[datetime] = None,
         week_end: Optional[datetime] = None,
         seen_urls: Optional[set] = None
     ) -> Dict[str, Any]:
         """Scrape a single website for articles with date filtering and deduplication"""
         logger.info(f"Starting to scrape: {url}")
-        
+
         # Default to current week if not provided
         if week_start is None or week_end is None:
             now = datetime.now(timezone.utc)
             week_start = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
             week_end = week_start + timedelta(days=7)
-        
+
         if seen_urls is None:
             seen_urls = set()
-        
+
         page = None
         try:
             page = await self.create_page()
-
+            
             # Navigate to the page
             await page.goto(url, wait_until='networkidle')
             await asyncio.sleep(3)
@@ -470,8 +555,9 @@ class WebScraper:
                     if article_url in seen_urls:
                         logger.debug(f"Skipping already seen URL: {article_url}")
                         continue
-                    
+
                     logger.info(f"Processing article {i+1}/{len(article_links)}: {article_url}")
+                    
                     article_content = await self.extract_article_content(page, article_url)
                     
                     # Check if article is within the week window
@@ -479,7 +565,7 @@ class WebScraper:
                     if not self._is_within_week_window(article_date, week_start, week_end):
                         logger.debug(f"Article {article_url} is outside week window, skipping")
                         continue
-                    
+
                     # Add hash for additional deduplication
                     title = article_content.get("title", "")
                     raw_hash = hashlib.sha256(
@@ -491,6 +577,9 @@ class WebScraper:
                     
                     articles.append(article_content)
                     processed_count += 1
+                    
+                    # Add to seen URLs
+                    seen_urls.add(article_url)
 
                     # Add delay between article requests
                     await self.random_delay(1, 3)
@@ -529,7 +618,7 @@ class WebScraper:
     async def scrape_multiple_sites(
         self,
         urls: List[str],
-        max_articles_per_url: int = 50,
+        max_articles_per_url: int = 20,  # Reduced default
         delay_range: Tuple[float, float] = (2, 5),
         week_start: Optional[datetime] = None,
         week_end: Optional[datetime] = None,
@@ -537,28 +626,28 @@ class WebScraper:
     ) -> Dict[str, Any]:
         """Scrape multiple websites concurrently with date filtering and deduplication"""
         logger.info(f"Starting to scrape {len(urls)} websites")
-        
+
         # Convert seen_urls list to set for faster lookups
         seen_set = set(seen_urls or [])
-        
         results = {}
 
         # Process URLs sequentially to avoid overwhelming servers
         for i, url in enumerate(urls):
             try:
                 logger.info(f"Processing URL {i+1}/{len(urls)}: {url}")
+                
                 result = await self.scrape_single_site(
-                    url, 
+                    url,
                     max_articles_per_url,
                     week_start=week_start,
                     week_end=week_end,
                     seen_urls=seen_set
                 )
-                
+
                 # Add newly found URLs to seen set for subsequent sites
                 for article in result.get("articles", []):
                     seen_set.add(article["url"])
-                
+
                 results[f"scrapeResult{i+1}"] = result
 
                 # Add delay between different websites
