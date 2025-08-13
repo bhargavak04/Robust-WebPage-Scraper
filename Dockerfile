@@ -1,5 +1,5 @@
 # Use the official Playwright image which comes with browsers and dependencies installed
-FROM mcr.microsoft.com/playwright/python:v1.44.0-jammy
+FROM mcr.microsoft.com/playwright/python:v1.40.0-jammy
 
 # Set working directory
 WORKDIR /app
