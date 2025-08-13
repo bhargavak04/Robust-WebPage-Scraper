@@ -1,33 +1,25 @@
-FROM python:3.11-slim
+# Use the official Playwright image which comes with browsers and dependencies installed
+FROM mcr.microsoft.com/playwright/python:v1.44.0-jammy
 
 # Set working directory
 WORKDIR /app
-
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    wget \
-    gnupg \
-    ca-certificates \
-    procps \
-    libxss1 \
-    && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching
 COPY requirements.txt .
 
 # Install Python dependencies
+# The base image runs as root, so we allow it here.
+# The user will be switched later.
 RUN pip install --no-cache-dir -r requirements.txt
-
-# Install Playwright browsers
-RUN playwright install chromium
-RUN playwright install-deps
 
 # Copy application code
 COPY . .
 
-# Create non-root user
-RUN useradd -m -u 1000 scraper && chown -R scraper:scraper /app
-USER scraper
+# The base image has a 'pwuser'. We'll use that user.
+# Give ownership of the app directory to the pwuser
+USER root
+RUN chown -R pwuser:pwuser /app
+USER pwuser
 
 # Expose port
 EXPOSE 8000

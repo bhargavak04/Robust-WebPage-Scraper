@@ -1,15 +1,11 @@
 services:
   - type: web
     name: robust-scraping-service
-    env: python
+    env: docker
     plan: starter
-    buildCommand: |
-      pip install -r requirements.txt
-      playwright install chromium
-      playwright install-deps
-    startCommand: python main.py
+    # The build and start commands are now defined in the Dockerfile.
+    # Render will automatically use the Dockerfile to build and run the service.
+    healthCheckPath: /health
     envVars:
-      - key: PYTHON_VERSION
-        value: 3.11.0
       - key: PORT
         value: 8000
